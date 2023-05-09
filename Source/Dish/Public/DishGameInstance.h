@@ -4,18 +4,29 @@
 
 #include "CoreMinimal.h"
 #include "Engine/GameInstance.h"
+#include "GSEventHandler.h"
 #include "DishGameInstance.generated.h"
 
 /**
- * 
+ *
  */
 UCLASS()
 class UDishGameInstance : public UGameInstance
 {
 	GENERATED_BODY()
-		virtual void Init();
+public:
+	virtual void Init();
 	virtual void Shutdown() override;
 
-		 UPROPERTY()
-		 class UTcpConnection *TcpConnection;
+	UFUNCTION(BlueprintImplementableEvent)
+	void ScriptInit();
+
+	UFUNCTION()
+	bool ConnectGS(const FString &inRemoteURL);
+
+	UPROPERTY()
+	class UGSEventHandler *GSEventHandler;
+
+	UPROPERTY()
+	class UTcpConnection *TcpConnection;
 };

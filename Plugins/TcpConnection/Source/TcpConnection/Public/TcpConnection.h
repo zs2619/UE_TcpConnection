@@ -33,7 +33,7 @@ public:
 	UIEventHandler *Connect()
 	{
 		eveHandler = NewObject<T>();
-		initConnect();
+		InitConnect();
 		return eveHandler;
 	}
 
@@ -45,6 +45,8 @@ public:
 	UFUNCTION()
 	void Dispose();
 
+	void InitConnect();
+
 public:
 	//~ FRunnable interface
 	virtual void Exit() override;
@@ -53,7 +55,6 @@ public:
 	virtual void Stop() override;
 
 private:
-	void initConnect();
 	void gameThreadLog(const FString str);
 	bool recvMessage();
 	bool blockingSend(const uint8 *data, int32 dataLen);

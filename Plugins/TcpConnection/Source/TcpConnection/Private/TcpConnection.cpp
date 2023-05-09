@@ -206,7 +206,7 @@ bool UTcpConnection::ReadMessage(TArray<uint8> *outMsg)
 	return true;
 }
 
-void UTcpConnection::initConnect()
+void UTcpConnection::InitConnect()
 {
 	eveHandler->SetTcpConnection(this);
 	runFlag = true;

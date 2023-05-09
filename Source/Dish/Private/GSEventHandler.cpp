@@ -7,6 +7,11 @@ UGSEventHandler::UGSEventHandler()
 
 UGSEventHandler::~UGSEventHandler() {}
 
+FString UGSEventHandler::GetModuleName_Implementation() const
+{
+	return TEXT("net.GSEventHandler");
+}
+
 void UGSEventHandler::OnRecvMessage()
 {
 	if (conn == nullptr)
