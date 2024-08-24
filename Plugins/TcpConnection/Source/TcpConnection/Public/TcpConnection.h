@@ -29,14 +29,6 @@ public:
 	UFUNCTION()
 	void SetRemoteURL(const FString &inRemoteURL);
 
-	template <typename T>
-	UIEventHandler *Connect()
-	{
-		eveHandler = NewObject<T>();
-		InitConnect();
-		return eveHandler;
-	}
-
 	UFUNCTION()
 	bool SendMessage(TArray<uint8> &msg);
 

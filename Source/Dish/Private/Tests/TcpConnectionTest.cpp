@@ -12,18 +12,17 @@ IMPLEMENT_SIMPLE_AUTOMATION_TEST(FTcpConnectionTest, "Dish.FTcpConnectionTest",
 
 bool FTcpConnectionTest::RunTest(const FString &Parameters)
 {
+	//UTcpConnection *connection;
+	//UGSEventHandler *gsEH;
 
-	UTcpConnection *connection;
-	UGSEventHandler *gsEH;
+	//connection = NewObject<UTcpConnection>();
+	//connection->SetRemoteURL("127.0.0.0:20000");
+	//gsEH = (UGSEventHandler *)connection->Connect<UGSEventHandler>();
 
-	connection = NewObject<UTcpConnection>();
-	connection->SetRemoteURL("127.0.0.0:20000");
-	gsEH = (UGSEventHandler *)connection->Connect<UGSEventHandler>();
+	//connection->Dispose();
 
-	connection->Dispose();
-
-	connection = nullptr;
-	gsEH = nullptr;
+	//connection = nullptr;
+	//gsEH = nullptr;
 	return true;
 }
 

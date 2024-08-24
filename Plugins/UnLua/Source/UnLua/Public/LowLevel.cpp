@@ -92,21 +92,16 @@ namespace UnLua
                     return true;
 
                 auto Names = (TSet<FName>*)Userdata;
-#if SUPPORTS_RPC_CALL
                 FString FuncName(lua_tostring(L, -2));
                 if (FuncName.EndsWith(TEXT("_RPC")))
                     FuncName = FuncName.Left(FuncName.Len() - 4);
                 Names->Add(FName(*FuncName));
-#else
-                Names->Add(FName(lua_tostring(L, -2)));
-#endif
-                
                 return true;
-            }; 
-            
+            };
+
             auto N = 1;
             bool bNext;
-            do 
+            do
             {
                 bNext = TraverseTable(L, -1, &FunctionNames, GetFunctionName) > INDEX_NONE;
                 if (bNext)
@@ -116,7 +111,8 @@ namespace UnLua
                     ++N;
                     bNext = lua_istable(L, -1);
                 }
-            } while (bNext);
+            }
+            while (bNext);
             lua_pop(L, N);
         }
 
@@ -136,19 +132,13 @@ namespace UnLua
             return Type;
         }
 
-        bool CheckPropertyOwner(lua_State* L, ITypeOps* InProperty, void* InContainerPtr)
+        bool CheckPropertyOwner(lua_State* L, UnLua::ITypeOps* InProperty, void* InContainerPtr)
         {
 #if ENABLE_TYPE_CHECK == 1
             if (InProperty->StaticExported)
                 return true;
 
-            ITypeInterface* TypeInterface = (ITypeInterface*)InProperty;
-            if (!TypeInterface->IsValid())
-            {
-                luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("Access invalid property %s."), *TypeInterface->GetName())));
-                return false;
-            }
-
+            UnLua::ITypeInterface* TypeInterface = (UnLua::ITypeInterface*)InProperty;
             FProperty* Property = TypeInterface->GetUProperty();
             if (!Property)
                 return true;
@@ -166,6 +156,66 @@ namespace UnLua
 #else
             return true;
 #endif
+        }
+
+        void* GetUserdata(lua_State* L, int32 Index, bool* OutTwoLvlPtr, bool *OutClassMetatable)
+        {
+            Index = AbsIndex(L, Index);
+
+            void* Userdata = nullptr;
+            bool bTwoLvlPtr = false, bClassMetatable = false;
+
+            int32 Type = lua_type(L, Index);
+            switch (Type)
+            {
+            case LUA_TTABLE:
+                {
+                    lua_pushstring(L, "Object");
+                    Type = lua_rawget(L, Index);
+                    if (Type == LUA_TUSERDATA)
+                    {
+                        Userdata = lua_touserdata(L, -1); // get the raw UObject
+                    }
+                    else
+                    {
+                        lua_pop(L, 1);
+                        lua_pushstring(L, "ClassDesc");
+                        Type = lua_rawget(L, Index);
+                        if (Type == LUA_TLIGHTUSERDATA)
+                        {
+                            Userdata = lua_touserdata(L, -1); // get the 'FClassDesc' pointer
+                            bClassMetatable = true;
+                        }
+                    }
+                    bTwoLvlPtr = true; // set two level pointer flag
+                    lua_pop(L, 1);
+                }
+                break;
+            case LUA_TUSERDATA:
+                Userdata = GetUserdataFast(L, Index, &bTwoLvlPtr); // get the userdata pointer
+                break;
+            default:
+                break;
+            }
+
+            if (OutTwoLvlPtr)
+                *OutTwoLvlPtr = bTwoLvlPtr;
+
+            if (OutClassMetatable)
+                *OutClassMetatable = bClassMetatable;
+
+            return Userdata;
+        }
+
+        uint8 CalculateUserdataPadding(UStruct* Struct)
+        {
+            const auto ScriptStruct = Cast<UScriptStruct>(Struct);
+            if (!ScriptStruct)
+                return 0;
+
+            const auto CppStructOps = ScriptStruct->GetCppStructOps();
+            const auto Alignment = CppStructOps ? CppStructOps->GetAlignment() : ScriptStruct->GetMinAlignment();
+            return CalcUserdataPadding(Alignment);
         }
     }
 }

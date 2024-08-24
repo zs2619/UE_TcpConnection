@@ -148,27 +148,20 @@ void FUnLuaEditorToolbar::BindToLua_Executed() const
     if (TargetClass->ImplementsInterface(UUnLuaInterface::StaticClass()))
         return;
 
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
     const auto Ok = FBlueprintEditorUtils::ImplementNewInterface(Blueprint, FName("UnLuaInterface"));
+#else
+    const auto Ok = FBlueprintEditorUtils::ImplementNewInterface(Blueprint, FTopLevelAssetPath(UUnLuaInterface::StaticClass()));
+#endif
     if (!Ok)
         return;
-
-    const auto Package = Blueprint->GetTypedOuter(UPackage::StaticClass());
-    const auto InterfaceDesc = *Blueprint->ImplementedInterfaces.FindByPredicate([](const FBPInterfaceDescription& Desc)
-    {
-        return Desc.Interface == UUnLuaInterface::StaticClass();
-    });
-
-    if (Package->GetName().StartsWith(TEXT("/Game/Editor/")))
-    {
-        // 特定目录下默认勾选RunInEditor
-        InterfaceDesc.Graphs[0]->Nodes[1]->Pins[1]->DefaultValue = TEXT("true");
-    }
 
     FString LuaModuleName;
     const auto ModifierKeys = FSlateApplication::Get().GetModifierKeys();
     const auto bIsAltDown = ModifierKeys.IsLeftAltDown() || ModifierKeys.IsRightAltDown();
     if (bIsAltDown)
     {
+        const auto Package = Blueprint->GetTypedOuter(UPackage::StaticClass());
         LuaModuleName = Package->GetName().RightChop(6).Replace(TEXT("/"), TEXT("."));
     }
     else
@@ -183,11 +176,14 @@ void FUnLuaEditorToolbar::BindToLua_Executed() const
 
     if (!LuaModuleName.IsEmpty())
     {
-        // 按住alt用蓝图路径，否则根据ModuleLocator的返回作为GetModuleName的默认值
-        InterfaceDesc.Graphs[1]->Nodes[1]->Pins[1]->DefaultValue = LuaModuleName;
+        const auto InterfaceDesc = *Blueprint->ImplementedInterfaces.FindByPredicate([](const FBPInterfaceDescription& Desc)
+        {
+            return Desc.Interface == UUnLuaInterface::StaticClass();
+        });
+        InterfaceDesc.Graphs[0]->Nodes[1]->Pins[1]->DefaultValue = LuaModuleName;
     }
 
-#if UE_VERSION_NEWER_THAN(4, 26, 0)
+#if !UE_VERSION_OLDER_THAN(4, 26, 0)
 
     const auto BlueprintEditors = FModuleManager::LoadModuleChecked<FBlueprintEditorModule>("Kismet").GetBlueprintEditors();
     for (auto BlueprintEditor : BlueprintEditors)
@@ -218,9 +214,13 @@ void FUnLuaEditorToolbar::UnbindFromLua_Executed() const
     if (!TargetClass->ImplementsInterface(UUnLuaInterface::StaticClass()))
         return;
 
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
     FBlueprintEditorUtils::RemoveInterface(Blueprint, FName("UnLuaInterface"));
+#else
+    FBlueprintEditorUtils::RemoveInterface(Blueprint, FTopLevelAssetPath(UUnLuaInterface::StaticClass()));
+#endif
 
-#if ENGINE_MAJOR_VERSION > 4 || (ENGINE_MAJOR_VERSION == 4 && ENGINE_MINOR_VERSION >= 26)
+#if !UE_VERSION_OLDER_THAN(4, 26, 0)
 
     const auto BlueprintEditors = FModuleManager::LoadModuleChecked<FBlueprintEditorModule>("Kismet").GetBlueprintEditors();
     for (auto BlueprintEditor : BlueprintEditors)

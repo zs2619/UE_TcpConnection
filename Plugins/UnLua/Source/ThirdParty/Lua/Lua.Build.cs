@@ -34,13 +34,13 @@ public class Lua : ModuleRules
         bEnableUndefinedIdentifierWarnings = false;
         ShadowVariableWarningLevel = WarningLevel.Off;
 
-        m_LuaVersion = "5.4.3";
+        m_LuaVersion = GetLuaVersion();
         m_Config = GetConfigName();
         m_LibName = GetLibraryName();
         m_BuildSystem = GetBuildSystem();
         m_CompileAsCpp = ShouldCompileAsCpp();
         m_LibDirName = string.Format("lib-{0}", m_CompileAsCpp ? "cpp" : "c");
-        m_LuaDirName = string.Format("lua-{0}", m_LuaVersion);
+        m_LuaDirName = m_LuaVersion;
 
         PublicIncludePaths.Add(Path.Combine(ModuleDirectory, m_LuaDirName, "src"));
 
@@ -77,34 +77,20 @@ public class Lua : ModuleRules
         PublicDelayLoadDLLs.Add(m_LibName);
         PublicAdditionalLibraries.Add(libPath);
 
-        var luaDllRelativeDir = "Binaries/Win64";
-        if (Target.bBuildEditor)
-        {
-            luaDllRelativeDir = string.Format("Plugins/UnLua/Source/ThirdParty/Lua/{0}/{1}/Win64/{2}", m_LuaDirName, m_LibDirName, m_Config);
-        }
-        else
-        {
-            var dstPath = Path.Combine("$(ProjectDir)", luaDllRelativeDir, m_LibName);
-            RuntimeDependencies.Add(dstPath, dllPath);
-            if (isDebug)
-            {
-                dstPath = Path.ChangeExtension(dstPath, ".pdb");
-                RuntimeDependencies.Add(dstPath, pdbPath);
-            }
-        }
-
-        PublicDefinitions.Add(string.Format("LUA_DLL_DIR=\"{0}\"", luaDllRelativeDir));
+        SetupForRuntimeDependency(dllPath, "Win64");
+        if (isDebug)
+            SetupForRuntimeDependency(pdbPath, "Win64");
     }
 
     private void BuildForAndroid()
     {
-        var NDKRoot = Environment.GetEnvironmentVariable("NDKROOT");
-        if (NDKRoot == null)
+        var ndkRoot = Environment.GetEnvironmentVariable("NDKROOT");
+        if (ndkRoot == null)
             throw new BuildException("can't find NDKROOT");
 
-        var toolchain = AndroidExports.CreateToolChain(Target.ProjectFile);
-        var NdkApiLevel = toolchain.GetNdkApiLevelInt(21);
-
+        var toolchain = GetAndroidToolChain();
+        var ndkApiLevel = toolchain.GetNdkApiLevelInt(21);
+        Console.WriteLine("toolchain.GetNdkApiLevelInt=", ndkApiLevel);
         var abiNames = new[] { "armeabi-v7a", "arm64-v8a", "x86_64" };
         foreach (var abiName in abiNames)
         {
@@ -116,14 +102,28 @@ public class Lua : ModuleRules
             EnsureDirectoryExists(libFile);
             var args = new Dictionary<string, string>
             {
-                { "CMAKE_TOOLCHAIN_FILE", Path.Combine(NDKRoot, "build/cmake/android.toolchain.cmake") },
+                { "CMAKE_TOOLCHAIN_FILE", Path.Combine(ndkRoot, "build/cmake/android.toolchain.cmake") },
                 { "ANDROID_ABI", abiName },
-                { "ANDROID_PLATFORM", "android-" + NdkApiLevel }
+                { "ANDROID_PLATFORM", "android-" + ndkApiLevel }
             };
             var buildDir = CMake(args);
             var buildFile = Path.Combine(buildDir, m_LibName);
             File.Copy(buildFile, libFile, true);
         }
+    }
+
+    private IAndroidToolChain GetAndroidToolChain()
+    {
+#if UE_5_2_OR_LATER
+        var ueBuildPlatformType = Assembly.GetAssembly(typeof(IAndroidToolChain)).GetType("UnrealBuildTool.UEBuildPlatform");
+        var getBuildPlatformMethod = ueBuildPlatformType.GetMethod("GetBuildPlatform", BindingFlags.Static | BindingFlags.Public);
+        var androidBuildPlatform = getBuildPlatformMethod.Invoke(null, new object[] { UnrealTargetPlatform.Android });
+        var createTempToolChainForProjectMethod = androidBuildPlatform.GetType().GetMethod("CreateTempToolChainForProject");
+        var toolchain = (IAndroidToolChain)createTempToolChainForProjectMethod.Invoke(androidBuildPlatform, new object[] { Target.ProjectFile });
+#else
+        var toolchain = AndroidExports.CreateToolChain(Target.ProjectFile);
+#endif
+        return toolchain;
     }
 
     private void BuildForLinux()
@@ -188,14 +188,18 @@ public class Lua : ModuleRules
 
     private void BuildForMac()
     {
+#if UE_5_2_OR_LATER
+        var abiName = Target.Architecture.ToString();
+#else
         var abiName = Target.Architecture;
+#endif
         var libFile = GetLibraryPath(abiName);
         if (!File.Exists(libFile))
         {
             EnsureDirectoryExists(libFile);
             var args = new Dictionary<string, string>
             {
-                { "CMAKE_OSX_ARCHITECTURES", Target.Architecture }
+                { "CMAKE_OSX_ARCHITECTURES", abiName }
             };
             var buildDir = CMake(args);
             var buildFile = Path.Combine(buildDir, m_LibName);
@@ -380,6 +384,22 @@ public class Lua : ModuleRules
         return false;
     }
 
+    private string GetLuaVersion()
+    {
+        var projectDir = Target.ProjectFile.Directory;
+        var configFilePath = projectDir + "/Config/DefaultUnLuaEditor.ini";
+        var configFileReference = new FileReference(configFilePath);
+        var configFile = FileReference.Exists(configFileReference)
+            ? new ConfigFile(configFileReference)
+            : new ConfigFile();
+        var config = new ConfigHierarchy(new[] { configFile });
+        const string section = "/Script/UnLuaEditor.UnLuaEditorSettings";
+        string version;
+        if (config.GetString(section, "LuaVersion", out version))
+            return version;
+        return "lua-5.4.3";
+    }
+
     private void EnsureDirectoryExists(string fileName)
     {
         var dirName = Path.GetDirectoryName(fileName);
@@ -439,6 +459,15 @@ public class Lua : ModuleRules
         }
 
         return null;
+    }
+
+    private void SetupForRuntimeDependency(string fullPath, string platform)
+    {
+        if (!File.Exists(fullPath))
+            return;
+        var fileName = Path.GetFileName(fullPath);
+        var dstPath = Path.Combine("$(ProjectDir)", "Binaries", platform, fileName);
+        RuntimeDependencies.Add(dstPath, fullPath);
     }
 
     private readonly string m_LuaVersion;

@@ -28,8 +28,8 @@
 #include "DefaultParamCollection.h"
 #include "GameDelegates.h"
 #include "LuaEnvLocator.h"
+#include "LuaOverrides.h"
 #include "UnLuaDebugBase.h"
-#include "UnLuaDelegates.h"
 #include "UnLuaInterface.h"
 #include "UnLuaSettings.h"
 #include "GameFramework/PlayerController.h"
@@ -47,21 +47,11 @@ namespace UnLua
     public:
         virtual void StartupModule() override
         {
-            LoadLuaLibrary();
-
 #if WITH_EDITOR
             FModuleManager::Get().LoadModule(TEXT("UnLuaEditor"));
 #endif
 
             RegisterSettings();
-
-            const auto& Settings = *GetDefault<UUnLuaSettings>();
-            const auto EnvLocatorClass = *Settings.EnvLocatorClass == nullptr ? ULuaEnvLocator::StaticClass() : *Settings.EnvLocatorClass;
-            EnvLocator = NewObject<ULuaEnvLocator>(GetTransientPackage(), EnvLocatorClass);
-            EnvLocator->AddToRoot();
-
-            GUObjectArray.AddUObjectCreateListener(this);
-            GUObjectArray.AddUObjectDeleteListener(this);
 
 #if ALLOW_CONSOLE
             ConsoleCommands = MakeUnique<FUnLuaConsoleCommands>(this);
@@ -89,19 +79,8 @@ namespace UnLua
 
         virtual void ShutdownModule() override
         {
-            UnloadLuaLibrary();
-
-            if (!UObjectInitialized())
-                return;
-
             UnregisterSettings();
             SetActive(false);
-
-            EnvLocator->RemoveFromRoot();
-            EnvLocator = nullptr;
-
-            GUObjectArray.RemoveUObjectCreateListener(this);
-            GUObjectArray.RemoveUObjectDeleteListener(this);
         }
 
         virtual bool IsActive() override
@@ -116,7 +95,15 @@ namespace UnLua
 
             if (bActive)
             {
-                const auto& Settings = *GetDefault<UUnLuaSettings>();
+                OnHandleSystemErrorHandle = FCoreDelegates::OnHandleSystemError.AddRaw(this, &FUnLuaModule::OnSystemError);
+                OnHandleSystemEnsureHandle = FCoreDelegates::OnHandleSystemEnsure.AddRaw(this, &FUnLuaModule::OnSystemError);
+                GUObjectArray.AddUObjectCreateListener(this);
+                GUObjectArray.AddUObjectDeleteListener(this);
+
+                const auto& Settings = *GetMutableDefault<UUnLuaSettings>();
+                const auto EnvLocatorClass = *Settings.EnvLocatorClass == nullptr ? ULuaEnvLocator::StaticClass() : *Settings.EnvLocatorClass;
+                EnvLocator = NewObject<ULuaEnvLocator>(GetTransientPackage(), EnvLocatorClass);
+                EnvLocator->AddToRoot();
                 FDeadLoopCheck::Timeout = Settings.DeadLoopCheck;
                 FDanglingCheck::Enabled = Settings.DanglingCheck;
 
@@ -142,20 +129,14 @@ namespace UnLua
             }
             else
             {
-                for (const auto Class : TObjectRange<UClass>())
-                {
-                    if (!Class->ImplementsInterface(UUnLuaInterface::StaticClass()))
-                        continue;
-#if WITH_EDITOR
-                    if (Class->HasAnyClassFlags(CLASS_NewerVersionExists))
-                        continue;
-                    const auto CDO = Class->GetDefaultObject(false);
-                    if (CDO && IUnLuaInterface::Execute_RunInEditor(CDO))
-                        continue;
-#endif
-                    ULuaFunction::RestoreOverrides(Class);
-                }
+                FCoreDelegates::OnHandleSystemError.Remove(OnHandleSystemErrorHandle);
+                FCoreDelegates::OnHandleSystemEnsure.Remove(OnHandleSystemEnsureHandle);
+                GUObjectArray.RemoveUObjectCreateListener(this);
+                GUObjectArray.RemoveUObjectDeleteListener(this);
                 EnvLocator->Reset();
+                EnvLocator->RemoveFromRoot();
+                EnvLocator = nullptr;
+                FLuaOverrides::Get().RestoreAll();
             }
 
             bIsActive = bActive;
@@ -163,42 +144,31 @@ namespace UnLua
 
         virtual FLuaEnv* GetEnv(UObject* Object) override
         {
-#if WITH_EDITOR
-            if (Object && FUnLuaDelegates::OnEditorLocate.IsBound())
-            {
-                if (const auto Env = FUnLuaDelegates::OnEditorLocate.Execute(Object))
-                    return Env;
-            }
-#endif
-
             if (!bIsActive)
                 return nullptr;
-
             return EnvLocator->Locate(Object);
         }
 
         virtual void HotReload() override
         {
+            if (!bIsActive)
+                return;
             EnvLocator->HotReload();
         }
 
     private:
         virtual void NotifyUObjectCreated(const UObjectBase* ObjectBase, int32 Index) override
         {
-#if WITH_EDITOR
-            if (GIsCookerLoadingPackage)
-                return;
-#endif
-
             // UE_LOG(LogTemp, Log, TEXT("NotifyUObjectCreated : %p"), ObjectBase);
-            UObject* Object = (UObject*)ObjectBase;
-            const auto Env = GetEnv(Object);
-            if (!Env)
+            if (!bIsActive)
                 return;
 
+            UObject* Object = (UObject*)ObjectBase;
+
+            const auto Env = EnvLocator->Locate(Object);
+            // UE_LOG(LogTemp, Log, TEXT("Locate %s for %s"), *Env->GetName(), *ObjectBase->GetFName().ToString());
             Env->TryBind(Object);
             Env->TryReplaceInputs(Object);
-            // UE_LOG(LogTemp, Log, TEXT("Locate %s for %s"), *Env->GetName(), *ObjectBase->GetFName().ToString());
         }
 
         virtual void NotifyUObjectDeleted(const UObjectBase* Object, int32 Index) override
@@ -208,6 +178,9 @@ namespace UnLua
 
         virtual void OnUObjectArrayShutdown() override
         {
+            if (!bIsActive)
+                return;
+
             GUObjectArray.RemoveUObjectCreateListener(this);
             GUObjectArray.RemoveUObjectDeleteListener(this);
 
@@ -260,35 +233,6 @@ namespace UnLua
             SetActive(false);
         }
 
-#endif
-
-
-#if PLATFORM_WINDOWS
-        
-        void LoadLuaLibrary()
-        {
-            const auto LuaDllDir = LUA_DLL_DIR; // defined in Lua.Build.cs
-            const auto Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / LuaDllDir);
-            FPlatformProcess::PushDllDirectory(*Dir);
-            LuaDllHandle = FPlatformProcess::GetDllHandle(TEXT("Lua.dll"));
-            FPlatformProcess::PopDllDirectory(*Dir);
-            if (!LuaDllHandle)
-                UE_LOG(LogUnLua, Error, TEXT("Failed to load Lua.dll"));
-        }
-
-        void UnloadLuaLibrary()
-        {
-            if (!LuaDllHandle)
-                return;
-            FPlatformProcess::FreeDllHandle(LuaDllHandle);
-            LuaDllHandle = nullptr;
-        }
-
-        void* LuaDllHandle = nullptr;
-
-#else
-        void LoadLuaLibrary() {}
-        void UnloadLuaLibrary() {}
 #endif
 
         void RegisterSettings()

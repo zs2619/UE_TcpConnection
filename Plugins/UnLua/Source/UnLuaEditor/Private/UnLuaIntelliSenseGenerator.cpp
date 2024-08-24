@@ -12,8 +12,13 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. 
 // See the License for the specific language governing permissions and limitations under the License.
 
+#include "Misc/EngineVersionComparison.h"
 #include "UnLuaIntelliSenseGenerator.h"
+#if UE_VERSION_NEWER_THAN(5, 1, 0)
+#include "AssetRegistry/AssetRegistryModule.h"
+#else
 #include "AssetRegistryModule.h"
+#endif
 #include "CoreUObject.h"
 #include "UnLua.h"
 #include "UnLuaEditorSettings.h"
@@ -55,8 +60,13 @@ void FUnLuaIntelliSenseGenerator::UpdateAll()
     const FAssetRegistryModule& AssetRegistryModule = FModuleManager::LoadModuleChecked<FAssetRegistryModule>(TEXT("AssetRegistry"));
 
     FARFilter Filter;
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
     Filter.ClassNames.Add(UBlueprint::StaticClass()->GetFName());
     Filter.ClassNames.Add(UWidgetBlueprint::StaticClass()->GetFName());
+#else
+    Filter.ClassPaths.Add(UBlueprint::StaticClass()->GetClassPathName());
+    Filter.ClassPaths.Add(UWidgetBlueprint::StaticClass()->GetClassPathName());
+#endif
 
     TArray<FAssetData> BlueprintAssets;
     TArray<const UField*> NativeTypes;
@@ -98,8 +108,13 @@ void FUnLuaIntelliSenseGenerator::UpdateAll()
 
 bool FUnLuaIntelliSenseGenerator::IsBlueprint(const FAssetData& AssetData)
 {
+#if UE_VERSION_OLDER_THAN(5, 1, 0)
     const FName AssetClass = AssetData.AssetClass;
     return AssetClass == UBlueprint::StaticClass()->GetFName() || AssetClass == UWidgetBlueprint::StaticClass()->GetFName();
+#else
+    const auto AssetClassPath = AssetData.AssetClassPath.ToString();
+    return AssetClassPath == UBlueprint::StaticClass()->GetName() || AssetClassPath == UWidgetBlueprint::StaticClass()->GetName();
+#endif
 }
 
 bool FUnLuaIntelliSenseGenerator::ShouldExport(const FAssetData& AssetData, bool bLoad)

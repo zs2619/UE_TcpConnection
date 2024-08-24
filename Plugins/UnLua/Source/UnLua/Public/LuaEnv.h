@@ -29,7 +29,6 @@
 #include "LuaDanglingCheck.h"
 #include "LuaDeadLoopCheck.h"
 #include "LuaModuleLocator.h"
-#include "IHotReloadWatcher.h"
 
 namespace UnLua
 {
@@ -45,15 +44,11 @@ namespace UnLua
 
         DECLARE_MULTICAST_DELEGATE_OneParam(FOnDestroyed, FLuaEnv&);
 
-        DECLARE_MULTICAST_DELEGATE_TwoParams(FOnModuleLoaded, const FString& /* ModuleName */, const FString& /* FilePath */);
-
         DECLARE_DELEGATE_RetVal_FourParams(bool, FLuaFileLoader, const FLuaEnv& /* Env */, const FString& /* FilePath */, TArray<uint8>&/* Data */, FString&/* RealFilePath */);
 
         static FOnCreated OnCreated;
 
         static FOnDestroyed OnDestroyed;
-
-        FOnModuleLoaded OnModuleLoaded;
 
         FLuaEnv();
 
@@ -73,14 +68,6 @@ namespace UnLua
 
         void SetName(FString InName);
 
-        template <class T>
-        void Watch(const TArray<FString>& Directories)
-        {
-            if (!Watcher)
-                Watcher = MakeUnique<T>(this);
-            Watcher->Watch(Directories);
-        }
-
         virtual void NotifyUObjectDeleted(const UObjectBase* ObjectBase, int32 Index) override;
 
         virtual void OnUObjectArrayShutdown() override;
@@ -93,7 +80,7 @@ namespace UnLua
 
         virtual void GC();
 
-        virtual void HotReload(const TArray<FString>& ModuleNames = {});
+        virtual void HotReload();
 
         FORCEINLINE lua_State* GetMainState() const { return L; }
 
@@ -146,22 +133,22 @@ namespace UnLua
 
         virtual lua_Alloc GetLuaAllocator() const;
 
-        bool LoadString(const TArray<uint8>& Chunk, const FString& ChunkName = "chunk")
+        bool LoadString(lua_State* InL, const TArray<uint8>& Chunk, const FString& ChunkName = "chunk")
         {
             const char* Bytes = (char*)Chunk.GetData();
-            return LoadBuffer(Bytes, Chunk.Num(), TCHAR_TO_UTF8(*ChunkName));
+            return LoadBuffer(InL, Bytes, Chunk.Num(), TCHAR_TO_UTF8(*ChunkName));
         }
 
-        bool LoadString(const FString& Chunk, const FString& ChunkName = "chunk")
+        bool LoadString(lua_State* InL, const FString& Chunk, const FString& ChunkName = "chunk")
         {
             const FTCHARToUTF8 Bytes(*Chunk);
-            return LoadBuffer(Bytes.Get(), Bytes.Length(), TCHAR_TO_UTF8(*ChunkName));
+            return LoadBuffer(InL, Bytes.Get(), Bytes.Length(), TCHAR_TO_UTF8(*ChunkName));
         }
 
     private:
         void AddSearcher(lua_CFunction Searcher, int Index) const;
 
-        bool LoadBuffer(const char* Buffer, const size_t Size, const char* InName);
+        bool LoadBuffer(lua_State* InL, const char* Buffer, const size_t Size, const char* InName);
 
         void OnAsyncLoadingFlushUpdate();
 
@@ -172,11 +159,9 @@ namespace UnLua
         void UnRegisterDelegates();
 
         static TMap<lua_State*, FLuaEnv*> AllEnvs;
-
         TMap<FString, lua_CFunction> BuiltinLoaders;
         TArray<FLuaFileLoader> CustomLoaders;
         TArray<FWeakObjectPtr> Candidates; // binding candidates during async loading
-        TUniquePtr<IHotReloadWatcher> Watcher;
         ULuaModuleLocator* ModuleLocator;
         FCriticalSection CandidatesLock;
         FObjectReferencer AutoObjectReference;

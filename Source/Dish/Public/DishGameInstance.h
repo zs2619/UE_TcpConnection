@@ -26,7 +26,4 @@ public:
 
 	UPROPERTY()
 	class UGSEventHandler *GSEventHandler;
-
-	UPROPERTY()
-	class UTcpConnection *TcpConnection;
 };

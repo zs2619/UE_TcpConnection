@@ -36,14 +36,6 @@ enum class EHotReloadMode : uint8
     Never
 };
 
-UENUM()
-enum class EPackagingMode : uint8
-{
-    Pak,
-    NonPak,
-    Manual,
-};
-
 UCLASS(config=UnLuaEditor, defaultconfig, meta=(DisplayName="UnLuaEditor"))
 class UNLUAEDITOR_API UUnLuaEditorSettings : public UObject
 {
@@ -58,10 +50,6 @@ public:
     UPROPERTY(config, EditAnywhere, Category = "Coding")
     bool bGenerateIntelliSense = true;
 
-    /** Pick a method for how lua files are packaged. */
-    UPROPERTY(config, EditAnywhere, Category = "Packaging", meta = (defaultValue = 0))
-    EPackagingMode PackagingMode;
-
     /** Whether or not startup UnLua module on game start. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Build")
     bool bAutoStartup = true;
@@ -69,6 +57,10 @@ public:
     /** Enable UnLua debug routine codes. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Build")
     bool bEnableDebug = false;
+
+    /** Enable Unreal Insights to profile call performance. (Requires restart to take effect) */
+    UPROPERTY(config, EditAnywhere, Category = "Build")
+    bool bEnableUnrealInsights = false;
 
     /** Enable persistent buffer for UFunction's parameters. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Build")
@@ -78,17 +70,21 @@ public:
     UPROPERTY(config, EditAnywhere, Category = "Build")
     bool bEnableTypeChecking = true;
 
-    /** Enable RPC support (Deprecated). (Requires restart to take effect) */
-    UPROPERTY(config, EditAnywhere, Category = "Build")
-    bool bEnableRPCCall = true;
-
     /** Enable 'Overridden' support at lua runtime. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Build")
     bool bEnableCallOverriddenFunction = true;
 
+    /** Enable FText support at lua runtime which will no longer be treated as a string. (Requires restart to take effect) */
+    UPROPERTY(config, EditAnywhere, Category = "Build")
+    bool bEnableFText = true;
+
     /** Whether or not compile lua module as c++ code. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Build")
     bool bLuaCompileAsCpp = false;
+
+    /** Use the specified lua version. (Requires restart to take effect) */
+    UPROPERTY(config, EditAnywhere, Category = "Build")
+    FString LuaVersion = TEXT("lua-5.4.3");
 
     /** Create UE4 global table on lua env. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Legacy")
@@ -105,6 +101,10 @@ public:
     /** Allow lua file with UTF-8 BOM header. (Requires restart to take effect) */
     UPROPERTY(config, EditAnywhere, Category = "Legacy")
     bool bLegacyAllowUTF8WithBOM = false;
+
+    /** Arguments are passed to lua by pointer when called from UE. (Requires restart to take effect) */
+    UPROPERTY(config, EditAnywhere, Category = "Legacy")
+    bool bLegacyArgsPassing = true;
 
     UPROPERTY(config, EditAnywhere, Category = "System", meta = (defaultValue = 0))
     EUpdateMode UpdateMode;

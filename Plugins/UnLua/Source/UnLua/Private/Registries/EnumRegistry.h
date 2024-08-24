@@ -36,17 +36,13 @@ namespace UnLua
 
         void NotifyUObjectDeleted(UObject* Object);
 
-        FEnumDesc* Register(const char* MetatableName);
-
-        FEnumDesc* Register(const UEnum* Enum);
+        FEnumDesc* Register(UEnum* Enum, lua_CFunction IndexFunc = nullptr);
 
         void Unregister(const UEnum* Enum);
 
     private:
-        void Unregister(const FEnumDesc* ClassDesc, const bool bForce);
-
         TMap<UEnum*, FEnumDesc*> Enums;
-        TMap<FName, FEnumDesc*> Name2Enums;
+        TMap<FString, FEnumDesc*> Name2Enums;
         FLuaEnv* Env;
     };
 }

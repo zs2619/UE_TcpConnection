@@ -13,7 +13,6 @@ public class Dish : ModuleRules
 		PrivateDependencyModuleNames.AddRange(new string[] { 
 		  "UnLua",
            "Lua",
-           "LuaProtobuf",
 		 });
 
 		// Uncomment if you are using Slate UI

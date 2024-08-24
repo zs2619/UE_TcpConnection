@@ -42,11 +42,9 @@ void UTcpConnection::Dispose()
 		delete runThread;
 		runThread = nullptr;
 	}
-	if (eveHandler != nullptr)
-	{
-		// delete eveHandler;
-		eveHandler = nullptr;
-	}
+
+	eveHandler = nullptr;
+
 	if (socket != nullptr)
 	{
 		socketSubsystem->DestroySocket(socket);
@@ -80,8 +78,8 @@ void UTcpConnection::Stop()
 
 uint32 UTcpConnection::Run()
 {
-	AsyncTask(ENamedThreads::GameThread, []()
-			  { UE_LOG(LogTcpConnection, Log, TEXT("UTcpConnection::Run start")); });
+	UE_LOG(LogTcpConnection, Log, TEXT("FTcpConnection::Run start"));
+	TWeakObjectPtr<UTcpConnection> weakThis = this;
 	while (runFlag)
 	{
 		if (connectionState == TCS_Connecting)
@@ -132,8 +130,8 @@ uint32 UTcpConnection::Run()
 										FPlatformProcess::SleepNoStats(0.001f); } return true; });
 
 				/// 游戏逻辑线程执行回调逻辑
-				AsyncTask(ENamedThreads::GameThread, [this]()
-						  {if (eveHandler != nullptr) { eveHandler->OnConnected(); } });
+				AsyncTask(ENamedThreads::GameThread, [weakThis]()
+						  {if (weakThis.IsValid() &&weakThis->eveHandler != nullptr) { weakThis->eveHandler->OnConnected(); } });
 
 				connectionState = TCS_Connected;
 			}
@@ -177,16 +175,15 @@ uint32 UTcpConnection::Run()
 			// 结束发送线程
 			sendFlag = false;
 			ClientSendFuture.Wait();
-			AsyncTask(ENamedThreads::GameThread, [this]()
-					  {if (eveHandler != nullptr) { eveHandler->OnDisconnected(); } });
+			AsyncTask(ENamedThreads::GameThread, [weakThis]()
+					  {if (weakThis.IsValid()&&weakThis->eveHandler != nullptr) { weakThis->eveHandler->OnDisconnected(); } });
 
 			connectionState = TCS_ReconnectPending;
 		}
 
 		FPlatformProcess::SleepNoStats(0.001f);
 	}
-	AsyncTask(ENamedThreads::GameThread, []()
-			  { UE_LOG(LogTcpConnection, Log, TEXT("UTcpConnection::Run stop")); });
+	UE_LOG(LogTcpConnection, Log, TEXT("FTcpConnection::Run stop"));
 	return 0;
 }
 
@@ -231,7 +228,7 @@ bool UTcpConnection::recvMessage()
 		return (socket->GetConnectionState() != SCS_ConnectionError);
 	}
 	uint32 pendingDataSize = 0;
-	for (;;)
+	while (true)
 	{
 		int32 bytesRead = 0;
 		if (recvMessageDataRemaining == 0)
@@ -281,8 +278,9 @@ bool UTcpConnection::recvMessage()
 			if (recvMessageDataRemaining == 0)
 			{
 				inbox.Enqueue(MakeShareable(new TArray<uint8>(receivedData)));
-				AsyncTask(ENamedThreads::GameThread, [this]()
-						  {if (eveHandler != nullptr) { eveHandler->OnRecvMessage(); } });
+				TWeakObjectPtr<UTcpConnection> weakThis = this;
+				AsyncTask(ENamedThreads::GameThread, [weakThis]()
+						  {if (weakThis.IsValid()&&weakThis->eveHandler != nullptr) { weakThis->eveHandler->OnRecvMessage(); } });
 			}
 		}
 		else

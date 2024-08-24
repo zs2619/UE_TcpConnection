@@ -1,0 +1,7 @@
+.vs
+Intermediate/
+obj/
+Binaries/
+Saved/
+/.vsconfig
+/*.sln

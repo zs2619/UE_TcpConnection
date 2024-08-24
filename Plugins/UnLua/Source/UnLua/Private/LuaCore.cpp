@@ -311,57 +311,7 @@ void SetUserdataFlags(void* Userdata, uint8 Flags)
  */
 void* GetUserdata(lua_State *L, int32 Index, bool *OutTwoLvlPtr, bool *OutClassMetatable)
 {
-    // Index < LUA_REGISTRYINDEX => upvalues
-    if (Index < 0 && Index > LUA_REGISTRYINDEX)
-    {
-        int32 Top = lua_gettop(L);
-        Index = Top + Index + 1;
-    }
-
-    void *Userdata = nullptr;
-    bool bTwoLvlPtr = false, bClassMetatable = false;
-
-    int32 Type = lua_type(L, Index);
-    switch (Type)
-    {
-    case LUA_TTABLE:
-        {
-            lua_pushstring(L, "Object");
-            Type = lua_rawget(L, Index);
-            if (Type == LUA_TUSERDATA)
-            {
-                Userdata = lua_touserdata(L, -1);           // get the raw UObject
-            }
-            else
-            {
-                lua_pop(L, 1);
-                lua_pushstring(L, "ClassDesc");
-                Type = lua_rawget(L, Index);
-                if (Type == LUA_TLIGHTUSERDATA)
-                {
-                    Userdata = lua_touserdata(L, -1);       // get the 'FClassDesc' pointer
-                    bClassMetatable = true;
-                }
-            }
-            bTwoLvlPtr = true;                              // set two level pointer flag
-            lua_pop(L, 1);
-        }
-        break;
-    case LUA_TUSERDATA:
-        Userdata = GetUserdataFast(L, Index, &bTwoLvlPtr);  // get the userdata pointer
-        break;
-    }
-
-    if (OutTwoLvlPtr)
-    {
-        *OutTwoLvlPtr = bTwoLvlPtr;
-    }
-    if (OutClassMetatable)
-    {
-        *OutClassMetatable = bClassMetatable;
-    }
-
-    return Userdata;
+    return UnLua::LowLevel::GetUserdata(L, Index, OutTwoLvlPtr, OutClassMetatable);
 }
 
 /**
@@ -411,7 +361,7 @@ void* GetUserdataFast(lua_State *L, int32 Index, bool *OutTwoLvlPtr)
  */
 bool TryToSetMetatable(lua_State* L, const char* MetatableName, UObject* Object)
 {
-    const auto Registry = UnLua::FLuaEnv::FindEnvChecked(L).GetClassRegistry();
+    const auto Registry = UnLua::FLuaEnv::FindEnv(L)->GetClassRegistry();
     if (!Registry)
         return false;
 
@@ -455,7 +405,7 @@ void* NewUserdataWithPadding(lua_State *L, int32 Size, const char *MetatableName
 void* GetCppInstance(lua_State *L, int32 Index)
 {
     bool bTwoLvlPtr = false;
-    void *Userdata = GetUserdata(L, Index, &bTwoLvlPtr);
+    void *Userdata = UnLua::LowLevel::GetUserdata(L, Index, &bTwoLvlPtr);
     if (Userdata)
     {
         return bTwoLvlPtr ? *((void**)Userdata) : Userdata;         // return instance's address
@@ -523,6 +473,36 @@ void* CacheScriptContainer(lua_State *L, void *Key, const FScriptContainerDesc &
         check(Type == LUA_TUSERDATA);
     }
 #endif
+    lua_remove(L, -2);
+    return Userdata;            // return null if container is already cached, or the new created userdata otherwise
+}
+
+
+void* CacheScriptContainer(lua_State *L, void *Key, const FScriptContainerDesc &Desc, const TFunctionRef<bool (void*)>& Validator)
+{
+    if (!Key)
+    {
+        UNLUA_LOGERROR(L, LogUnLua, Warning, TEXT("%s, Invalid key!"), ANSI_TO_TCHAR(__FUNCTION__));
+        return nullptr;
+    }
+
+    // return null if container is already cached, or create/cache/return a new ud
+    void *Userdata = nullptr;
+    lua_getfield(L, LUA_REGISTRYINDEX, "ScriptContainerMap");
+    lua_pushlightuserdata(L, Key);
+    int32 Type = lua_rawget(L, -2);
+    if (Type == LUA_TNIL || !Validator(lua_touserdata(L, -1)))
+    {
+        lua_pop(L, 1);
+
+        Userdata = NewUserdataWithContainerTag(L, Desc.GetSize());      // create new userdata
+        luaL_setmetatable(L, Desc.GetName());               // set metatable
+        lua_pushlightuserdata(L, Key);
+        lua_pushvalue(L, -2);
+        lua_rawset(L, -4);                                  // cache it in 'ScriptContainerMap'
+        UnLua::FLuaEnv::FindEnv(L)->GetDanglingCheck()->CaptureContainer(L, Key);
+    }
+
     lua_remove(L, -2);
     return Userdata;            // return null if container is already cached, or the new created userdata otherwise
 }
@@ -1006,10 +986,9 @@ static void GetFieldInternal(lua_State* L)
     lua_pop(L, 1);
 
     // TODO: refactor
-    const auto Env = UnLua::FLuaEnv::FindEnv(L);
-    const auto Registry = Env->GetClassRegistry();
+    const auto Registry = UnLua::FLuaEnv::FindEnv(L)->GetClassRegistry();
     FClassDesc* ClassDesc = Registry->Register(ClassName);
-    TSharedPtr<FFieldDesc> Field = ClassDesc->RegisterField(Env, FieldName, ClassDesc);
+    TSharedPtr<FFieldDesc> Field = ClassDesc->RegisterField(FieldName, ClassDesc);
     if (Field && Field->IsValid())
     {
         bool bCached = false;
@@ -1022,6 +1001,23 @@ static void GetFieldInternal(lua_State* L)
             lua_pushvalue(L, 2);
             Type = lua_rawget(L, -2);
             bCached = Type != LUA_TNIL;
+            // check cached property from non-native class
+            if (bCached && !Field->OuterClass->IsNative())
+            {
+                auto Ptr = lua_touserdata(L, -1);
+                if (Ptr)
+                {
+                    auto Property = static_cast<TSharedPtr<UnLua::ITypeOps>*>(Ptr);
+                    if (Property && Property->IsValid())
+                    {
+                        auto PropertyDesc = static_cast<FPropertyDesc*>((*Property).Get());
+                        if (!PropertyDesc->IsValid())
+                        {
+                            bCached = false;
+                        }
+                    }
+                }
+            }
             if (!bCached)
             {
                 lua_pop(L, 1);
@@ -1071,95 +1067,6 @@ FORCEINLINE static int32 GetField(lua_State* L)
         GetFieldInternal(L);
     lua_remove(L, -2);
     return 1;
-}
-
-/**
- * Get collision related enums
- */
-static bool RegisterCollisionEnum(lua_State *L, const char *Name, lua_CFunction IndexFunc)
-{
-    int32 Type = luaL_getmetatable(L, Name);
-    if (Type == LUA_TTABLE)
-    {
-        lua_pop(L, 1);
-        return true;
-    }
-
-    UnLua::FLuaEnv::FindEnvChecked(L).GetEnumRegistry()->Register(Name);
-
-    lua_pop(L, 1);
-    luaL_newmetatable(L, Name);
-    lua_pushvalue(L, -1);
-    lua_setmetatable(L, -2);
-    lua_pushstring(L, "__index");
-    lua_pushcfunction(L, IndexFunc);
-    lua_rawset(L, -3);
-    SetTableForClass(L, Name);
-    return true;
-}
-
-/**
- * __index meta methods for collision related enums
- */
-static int32 CollisionEnum_Index(lua_State *L, int32(*Converter)(FName))
-{
-    const char *Name = lua_tostring(L, -1);
-    if (Name)
-    {
-        int32 Value = Converter(FName(Name));
-        if (Value == INDEX_NONE)
-        {
-            UNLUA_LOGERROR(L, LogUnLua, Warning, TEXT("%s: Cann't find enum %s!"), ANSI_TO_TCHAR(__FUNCTION__), ANSI_TO_TCHAR(Name));
-        }
-        lua_pushvalue(L, 2);
-        lua_pushinteger(L, Value);
-        lua_rawset(L, 1);
-        lua_pushinteger(L, Value);
-    }
-    else
-    {
-        lua_pushinteger(L, INDEX_NONE);
-    }
-    return 1;
-}
-
-static int32 ECollisionChannel_Index(lua_State *L)
-{
-    return CollisionEnum_Index(L, &FCollisionHelper::ConvertToCollisionChannel);
-}
-
-static int32 EObjectTypeQuery_Index(lua_State *L)
-{
-    return CollisionEnum_Index(L, &FCollisionHelper::ConvertToObjectType);
-}
-
-static int32 ETraceTypeQuery_Index(lua_State *L)
-{
-    return CollisionEnum_Index(L, &FCollisionHelper::ConvertToTraceType);
-}
-
-/**
- * Register ECollisionChannel
- */
-bool RegisterECollisionChannel(lua_State *L)
-{
-    return RegisterCollisionEnum(L, "ECollisionChannel", ECollisionChannel_Index);
-}
-
-/**
- * Register EObjectTypeQuery
- */
-bool RegisterEObjectTypeQuery(lua_State *L)
-{
-    return RegisterCollisionEnum(L, "EObjectTypeQuery", EObjectTypeQuery_Index);
-}
-
-/**
- * Register ETraceTypeQuery
- */
-bool RegisterETraceTypeQuery(lua_State *L)
-{
-    return RegisterCollisionEnum(L, "ETraceTypeQuery", ETraceTypeQuery_Index);
 }
 
 /**
@@ -1284,174 +1191,31 @@ int32 TraverseTable(lua_State *L, int32 Index, void *Userdata, bool(*TraverseWor
 }
 
 /**
- * __index meta methods for enum
- */
-int32 Enum_Index(lua_State *L)
-{
-    // 1: meta table of the Enum; 2: entry name in Enum
-    
-    check(lua_isstring(L, -1));
-    lua_pushstring(L, "__name");        // 3
-    lua_rawget(L, 1);                   // 3
-    check(lua_isstring(L, -1));
-
-    const FEnumDesc* Enum = UnLua::FLuaEnv::FindEnvChecked(L).GetEnumRegistry()->Find(lua_tostring(L, -1));
-	if ((!Enum) 
-        || (!Enum->IsValid()))
-	{
-		lua_pop(L, 1);
-		return 0;
-	}
-    int64 Value = Enum->GetValue(lua_tostring(L, 2));
-    
-    lua_pop(L, 1);
-    lua_pushvalue(L, 2);
-    lua_pushinteger(L, Value);
-    lua_rawset(L, 1);
-    lua_pushinteger(L, Value);
-    
-    return 1;
-}
-
-int32 Enum_Delete(lua_State *L)
-{
-    return 0;
-}
-
-int32 Enum_GetMaxValue(lua_State* L)
-{   
-    int32 MaxValue = 0;
-    
-    lua_pushvalue(L, lua_upvalueindex(1));
-    if (lua_type(L,-1) == LUA_TTABLE)
-    {
-		lua_pushstring(L, "__name");
-		int32 Type = lua_rawget(L, -2);
-		if (Type == LUA_TSTRING)
-		{
-			const char* EnumName = lua_tostring(L, -1);
-			const FEnumDesc* EnumDesc = UnLua::FLuaEnv::FindEnvChecked(L).GetEnumRegistry()->Find(EnumName);
-			if (EnumDesc)
-			{
-				UEnum* Enum = EnumDesc->GetEnum();
-				if (Enum)
-				{
-					MaxValue = Enum->GetMaxEnumValue();
-				}
-			}
-		}
-		lua_pop(L, 1);
-    }
-    lua_pop(L, 1);
-
-    lua_pushinteger(L, MaxValue);
-    return 1;
-}
-
-int32 Enum_GetNameStringByValue(lua_State* L)
-{
-    if (lua_gettop(L) < 1)
-    {
-        return 0;
-    }
-
-    FString ValueName;
-
-    lua_pushvalue(L, lua_upvalueindex(1));
-    if (lua_type(L, -1) == LUA_TTABLE)
-    {
-        // enum value
-        int64 Value = lua_tointegerx(L, -2, nullptr);
-
-        lua_pushstring(L, "__name");
-        int32 Type = lua_rawget(L, -2);
-        if (Type == LUA_TSTRING)
-        {
-            const char* EnumName = lua_tostring(L, -1);
-            const FEnumDesc* EnumDesc = UnLua::FLuaEnv::FindEnvChecked(L).GetEnumRegistry()->Find(EnumName);
-            if (EnumDesc)
-            {
-                UEnum* Enum = EnumDesc->GetEnum();
-                if (Enum)
-                {   
-                    ValueName = Enum->GetNameStringByValue(Value);
-                }
-            }
-        }
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 1);
-
-    UnLua::Push(L, ValueName);
-
-    return 1;
-}
-
-int32 Enum_GetDisplayNameTextByValue(lua_State* L)
-{
-    if (lua_gettop(L) < 1)
-    {
-        return 0;
-    }
-
-    FText ValueName;
-
-    lua_pushvalue(L, lua_upvalueindex(1));
-    if (lua_type(L, -1) == LUA_TTABLE)
-    {
-        // enum value
-        int64 Value = lua_tointegerx(L, -2, nullptr);
-
-        lua_pushstring(L, "__name");
-        int32 Type = lua_rawget(L, -2);
-        if (Type == LUA_TSTRING)
-        {
-            const char* EnumName = lua_tostring(L, -1);
-            const FEnumDesc* EnumDesc = UnLua::FLuaEnv::FindEnvChecked(L).GetEnumRegistry()->Find(EnumName);
-            if (EnumDesc)
-            {
-                UEnum* Enum = EnumDesc->GetEnum();
-                if (Enum)
-                {   
-                    ValueName = Enum->GetDisplayNameTextByValue(Value);
-                }
-            }
-        }
-        lua_pop(L, 1);
-    }
-    lua_pop(L, 1);
-
-    UnLua::Push(L, ValueName);
-
-    return 1;
-}
-
-/**
  * __index meta methods for class
  */
 int32 Class_Index(lua_State *L)
 {
     GetField(L);
 
-    const auto Ptr = lua_touserdata(L, -1);
+    auto Ptr = lua_touserdata(L, -1);
     if (!Ptr)
         return 1;
 
-    const auto Property = static_cast<TSharedPtr<UnLua::ITypeOps>*>(Ptr)->Get();
-    if (!Property || !Property->IsValid())
+    auto Property = static_cast<TSharedPtr<UnLua::ITypeOps>*>(Ptr);
+    if (!Property->IsValid())
         return 0;
-
-    const auto Self = GetCppInstance(L, 1);
+    
+    auto Self = GetCppInstance(L, 1);
     if (!Self)
         return 1;
 
     if (UnLua::LowLevel::IsReleasedPtr(Self))
-        return luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("attempt to read property '%s' on released object"), *Property->GetName())));
+        return luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("attempt to read property '%s' on released object"), *(*Property)->GetName())));
 
-    if (!UnLua::LowLevel::CheckPropertyOwner(L, Property, Self))
+    if (!UnLua::LowLevel::CheckPropertyOwner(L, (*Property).Get(), Self))
         return 0;
 
-    Property->Read(L, Self, false);
+    (*Property)->ReadValue_InContainer(L, Self, false);
     lua_remove(L, -2);
     return 1;
 }
@@ -1463,22 +1227,22 @@ int32 Class_NewIndex(lua_State *L)
 {
     GetField(L);
 
-    const auto Ptr = lua_touserdata(L, -1);
+    auto Ptr = lua_touserdata(L, -1);
     if (Ptr)
     {
-        const auto Property = static_cast<TSharedPtr<UnLua::ITypeOps>*>(Ptr)->Get();
-        if (Property && Property->IsValid())
+        auto Property = static_cast<TSharedPtr<UnLua::ITypeOps>*>(Ptr);
+        if (Property->IsValid())
         {
-            const auto Self = GetCppInstance(L, 1);
+            void* Self = GetCppInstance(L, 1);
             if (Self)
             {
                 if (UnLua::LowLevel::IsReleasedPtr(Self))
-                    return luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("attempt to write property '%s' on released object"), *Property->GetName())));
+                    return luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("attempt to write property '%s' on released object"), *(*Property)->GetName())));
 
-                if (!UnLua::LowLevel::CheckPropertyOwner(L, Property, Self))
+                if (!UnLua::LowLevel::CheckPropertyOwner(L, (*Property).Get(), Self))
                     return 0;
 
-                Property->Write(L, Self, 3);
+                (*Property)->WriteValue_InContainer(L, Self, 3);
             }
         }
     }
@@ -1617,15 +1381,15 @@ int32 ScriptStruct_Index(lua_State *L)
         return 1;
 
     const auto Registry = UnLua::FLuaEnv::FindEnvChecked(L).GetObjectRegistry();
-    const auto Property = Registry->Get<UnLua::ITypeOps>(L, -1).Get();
-    if (!Property || !Property->IsValid())
+    const auto Property = Registry->Get<UnLua::ITypeOps>(L, -1);
+    if (!Property.IsValid())
         return 0;
 
-    const auto Self = GetCppInstanceFast(L, 1);
+    void* Self = GetCppInstanceFast(L, 1);
     if (!Self)
         return luaL_error(L, TCHAR_TO_UTF8(*FString::Printf(TEXT("attempt to read property '%s' on released struct"), *Property->GetName())));
 
-    Property->Read(L, Self, false);
+    Property->ReadValue_InContainer(L, Self, false);
     lua_remove(L, -2);
     return 1;
 }

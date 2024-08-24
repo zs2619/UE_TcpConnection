@@ -47,11 +47,4 @@ public:
     static FGenericLuaDelegate ConfigureLuaGC;
     
     static FCustomLuaFileLoader CustomLoadLuaFile;
-
-#if WITH_EDITOR
-    DECLARE_DELEGATE_RetVal_OneParam(UnLua::FLuaEnv*, FEditorLocate, const UObject*);
-
-    static FEditorLocate OnEditorLocate;
-#endif
-    
 };

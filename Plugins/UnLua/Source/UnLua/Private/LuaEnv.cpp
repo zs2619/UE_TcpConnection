@@ -37,7 +37,39 @@ namespace UnLua
 
     TMap<lua_State*, FLuaEnv*> FLuaEnv::AllEnvs;
     FLuaEnv::FOnCreated FLuaEnv::OnCreated;
-    FLuaEnv::FOnCreated FLuaEnv::OnDestroyed;
+    FLuaEnv::FOnDestroyed FLuaEnv::OnDestroyed;
+
+#if ENABLE_UNREAL_INSIGHTS && CPUPROFILERTRACE_ENABLED
+    void Hook(lua_State* L, lua_Debug* ar)
+    {
+        static TSet<FName> IgnoreNames{FName("Class"), FName("index"), FName("newindex")};
+
+        lua_getinfo(L, "nSl", ar);
+
+        if (ar->what == FName("Lua"))
+        {
+            if (IgnoreNames.Contains(ar->name))
+            {
+                return;
+            }
+
+            const auto EventName = FString::Printf(TEXT(
+                "%s [%s:%d]"),
+                                                   *FString(ar->name ? ar->name : "N/A"),
+                                                   *FPaths::GetBaseFilename(FString(ar->source)),
+                                                   ar->linedefined);
+
+            if (ar->event == 0)
+            {
+                FCpuProfilerTrace::OutputBeginDynamicEvent(*EventName);
+            }
+            else
+            {
+                FCpuProfilerTrace::OutputEndEvent();
+            }
+        }
+    }
+#endif
 
     FLuaEnv::FLuaEnv()
         : bStarted(false)
@@ -48,7 +80,16 @@ namespace UnLua
 
         RegisterDelegates();
 
+#if PLATFORM_WINDOWS
+        // 防止类似AppleProResMedia插件忘了恢复Dll查找目录
+        // https://github.com/Tencent/UnLua/issues/534
+        const auto Dir = FPaths::ConvertRelativePathToFull(FPaths::ProjectDir() / TEXT("Binaries/Win64"));
+        FPlatformProcess::PushDllDirectory(*Dir);
         L = lua_newstate(GetLuaAllocator(), nullptr);
+        FPlatformProcess::PopDllDirectory(*Dir);
+#else
+        L = lua_newstate(GetLuaAllocator(), nullptr);
+#endif
 
         AllEnvs.Add(L, this);
 
@@ -121,6 +162,13 @@ namespace UnLua
 
         OnCreated.Broadcast(*this);
         FUnLuaDelegates::OnLuaStateCreated.Broadcast(L);
+
+#if ENABLE_UNREAL_INSIGHTS && CPUPROFILERTRACE_ENABLED
+        if (FDeadLoopCheck::Timeout)
+            UE_LOG(LogUnLua, Warning, TEXT("Profiling will not working when DeadLoopCheck enabled."))
+        else
+            lua_sethook(L, Hook, LUA_MASKCALL | LUA_MASKRET, 0);
+#endif
     }
 
     FLuaEnv::~FLuaEnv()
@@ -346,7 +394,7 @@ namespace UnLua
         const auto DanglingGuard = GetDanglingCheck()->MakeGuard();
         lua_pushcfunction(L, ReportLuaCallError);
         const auto MsgHandlerIdx = lua_gettop(L);
-        if (!LoadBuffer(ChunkUTF8.Get(), ChunkUTF8.Length(), ChunkNameUTF8.Get()))
+        if (!LoadBuffer(L, ChunkUTF8.Get(), ChunkUTF8.Length(), ChunkNameUTF8.Get()))
         {
             lua_pop(L, 1);
             return false;
@@ -362,7 +410,7 @@ namespace UnLua
         return false;
     }
 
-    bool FLuaEnv::LoadBuffer(const char* Buffer, const size_t Size, const char* InName)
+    bool FLuaEnv::LoadBuffer(lua_State* InL, const char* Buffer, const size_t Size, const char* InName)
     {
         // TODO: env support
         // TODO: return value support
@@ -373,18 +421,18 @@ namespace UnLua
 #if !UNLUA_LEGACY_ALLOW_BOM
             UE_LOG(LogUnLua, Warning, TEXT("Lua chunk with utf-8 BOM:%s"), UTF8_TO_TCHAR(InName));
 #endif
-            return LoadBuffer(Buffer + 3, Size - 3, InName);
+            return LoadBuffer(InL, Buffer + 3, Size - 3, InName);
         }
 #endif
 
         // loads the buffer as a Lua chunk
-        const int32 Code = luaL_loadbufferx(L, Buffer, Size, InName, nullptr);
+        const int32 Code = luaL_loadbufferx(InL, Buffer, Size, InName, nullptr);
         if (Code != LUA_OK)
         {
             UE_LOG(LogUnLua, Warning, TEXT("Failed to call luaL_loadbufferx, error code: %d"), Code);
-            ReportLuaCallError(L); // report pcall error
-            lua_pushnil(L); /* error (message is on top of the stack) */
-            lua_insert(L, -2); /* put before error message */
+            ReportLuaCallError(InL); // report pcall error
+            lua_pushnil(InL); /* error (message is on top of the stack) */
+            lua_insert(InL, -2); /* put before error message */
             return false;
         }
 
@@ -397,12 +445,9 @@ namespace UnLua
         lua_gc(L, LUA_GCCOLLECT, 0);
     }
 
-    void FLuaEnv::HotReload(const TArray<FString>& ModuleNames)
+    void FLuaEnv::HotReload()
     {
-        if (ModuleNames.Num() == 0)
-            DoString("UnLua.HotReload()");
-        else
-            DoString("UnLua.HotReload({'" + FString::Join(ModuleNames, TEXT("','")) + "'})");
+        DoString("UnLua.HotReload()");
     }
 
     int32 FLuaEnv::FindThread(const lua_State* Thread)
@@ -520,7 +565,7 @@ namespace UnLua
             FString ChunkName(TEXT("chunk"));
             if (FUnLuaDelegates::CustomLoadLuaFile.Execute(Env, FileName, Data, ChunkName))
             {
-                if (Env.LoadString(Data, ChunkName))
+                if (Env.LoadString(L, Data, ChunkName))
                     return 1;
 
                 return luaL_error(L, "file loading from custom loader error");
@@ -540,7 +585,7 @@ namespace UnLua
             if (!Loader.Execute(Env, FileName, Data, ChunkName))
                 continue;
 
-            if (Env.LoadString(Data, ChunkName))
+            if (Env.LoadString(L, Data, ChunkName))
                 break;
 
             return luaL_error(L, "file loading from custom loader error");
@@ -551,8 +596,8 @@ namespace UnLua
 
     int FLuaEnv::LoadFromFileSystem(lua_State* L)
     {
-        const FString ModuleName(UTF8_TO_TCHAR(lua_tostring(L, 1)));
-        const auto FileName = ModuleName.Replace(TEXT("."), TEXT("/"));
+        FString FileName(UTF8_TO_TCHAR(lua_tostring(L, 1)));
+        FileName.ReplaceInline(TEXT("."), TEXT("/"));
 
         auto& Env = *(FLuaEnv*)lua_touserdata(L, lua_upvalueindex(1));
         TArray<uint8> Data;
@@ -560,12 +605,10 @@ namespace UnLua
 
         auto LoadIt = [&]
         {
-            if (Env.LoadString(Data, TCHAR_TO_UTF8(*FullPath)))
-            {
-                Env.OnModuleLoaded.Broadcast(ModuleName, FullPath);
+            if (Env.LoadString(L, Data, FullPath))
                 return 1;
-            }
-            return luaL_error(L, "file loading from file system error");
+            const auto Msg = FString::Printf(TEXT("file loading from file system error.\nfull path:%s"), *FullPath);
+            return luaL_error(L, TCHAR_TO_UTF8(*Msg));
         };
 
         const auto PackagePath = UnLuaLib::GetPackagePath(L);

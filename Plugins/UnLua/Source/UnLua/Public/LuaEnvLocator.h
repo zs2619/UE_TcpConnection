@@ -23,7 +23,6 @@ UCLASS()
 class UNLUA_API ULuaEnvLocator : public UObject
 {
     GENERATED_BODY()
-
 public:
     virtual UnLua::FLuaEnv* Locate(const UObject* Object);
 
@@ -31,7 +30,6 @@ public:
 
     virtual void Reset();
 
-protected:
     TSharedPtr<UnLua::FLuaEnv, ESPMode::ThreadSafe> Env;
 };
 
